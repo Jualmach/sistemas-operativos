@@ -82,6 +82,7 @@ class GestorMemoria:
         self.fragmentacion_externa = 0.0
         self.asignaciones_totales = 0
         self.liberaciones_totales = 0
+        self.desperdicio_memoria = 0
     
     # ==================== VALIDACIÓN ====================
     

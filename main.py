@@ -24,10 +24,6 @@ import random
 
 
 class SimuladorSO:
-    """
-    Simulador principal del Sistema Operativo.
-    Integra todos los componentes del sistema.
-    """
     
     def __init__(self,
                  memoria_total_kb=Constantes.MEMORIA_TOTAL_KB,
@@ -106,10 +102,7 @@ class SimuladorSO:
             bool: True si fue exitoso
         """
         # Intentar asignar memoria
-        direccion = self.gestor_memoria.asignar_memoria(
-            pcb.get_pid(),
-            pcb.get_tamaño()
-        )
+        direccion = self.gestor_memoria.asignar_memoria(pcb)
         
         if direccion is None:
             # No hay memoria disponible

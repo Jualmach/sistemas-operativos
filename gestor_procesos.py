@@ -396,9 +396,9 @@ class GestorProcesos:
         if self.proceso_ejecutando:
             tipo = "SO" if self.proceso_ejecutando.es_sistema else "USR"
 
-        print(
+            print(
             f"P{self.proceso_ejecutando.get_pid()} [{tipo}]"
-        )
+            )
         else:
             print("vacío")
         

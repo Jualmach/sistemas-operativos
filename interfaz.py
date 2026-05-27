@@ -1,117 +1,176 @@
 import tkinter as tk
-from tkinter import ttk
 
 
 class SimuladorGUI:
 
-    def __init__(self, root):
+    def __init__(self, root, simulador):
 
         self.root = root
+        self.simulador = simulador
 
         self.root.title("Simulador de Sistema Operativo")
 
-        self.root.geometry("1200x700")
+        self.root.geometry("1400x800")
 
-        # ===== TÍTULO =====
+        # ===== TITULO =====
 
         titulo = tk.Label(
             root,
             text="SIMULADOR DE SISTEMA OPERATIVO",
-            font=("Arial", 18, "bold")
+            font=("Arial", 20, "bold")
         )
 
         titulo.pack(pady=10)
 
-        # ===== FRAME PRINCIPAL =====
+        # ===== FRAMES =====
 
-        frame_principal = tk.Frame(root)
+        self.frame_izq = tk.Frame(root)
+        self.frame_izq.pack(side="left", fill="y", padx=10)
 
-        frame_principal.pack(fill="both", expand=True)
+        self.frame_centro = tk.Frame(root)
+        self.frame_centro.pack(side="left", fill="both", expand=True)
 
-        # ===== COLA LISTOS =====
+        self.frame_der = tk.Frame(root)
+        self.frame_der.pack(side="right", fill="y", padx=10)
 
-        frame_listos = tk.LabelFrame(
-            frame_principal,
-            text="COLA DE LISTOS"
+        # ===== LISTOS =====
+
+        tk.Label(
+            self.frame_izq,
+            text="COLA LISTOS"
+        ).pack()
+
+        self.lista_listos = tk.Listbox(
+            self.frame_izq,
+            width=30,
+            height=15
         )
 
-        frame_listos.place(x=20, y=20, width=250, height=250)
+        self.lista_listos.pack()
 
-        self.lista_listos = tk.Listbox(frame_listos)
+        # ===== BLOQUEADOS =====
 
-        self.lista_listos.pack(fill="both", expand=True)
+        tk.Label(
+            self.frame_izq,
+            text="BLOQUEADOS"
+        ).pack()
 
-        # ===== PROCESO EJECUTANDO =====
-
-        frame_cpu = tk.LabelFrame(
-            frame_principal,
-            text="CPU"
+        self.lista_bloqueados = tk.Listbox(
+            self.frame_izq,
+            width=30,
+            height=10
         )
 
-        frame_cpu.place(x=300, y=20, width=250, height=150)
+        self.lista_bloqueados.pack()
+
+        # ===== CPU =====
+
+        tk.Label(
+            self.frame_centro,
+            text="CPU",
+            font=("Arial", 16, "bold")
+        ).pack()
 
         self.label_cpu = tk.Label(
-            frame_cpu,
+            self.frame_centro,
             text="VACÍO",
-            font=("Arial", 16)
+            font=("Arial", 18)
         )
 
-        self.label_cpu.pack(pady=30)
+        self.label_cpu.pack(pady=20)
 
         # ===== MEMORIA =====
 
-        frame_memoria = tk.LabelFrame(
-            frame_principal,
+        tk.Label(
+            self.frame_der,
             text="MEMORIA"
+        ).pack()
+
+        self.text_memoria = tk.Text(
+            self.frame_der,
+            width=40,
+            height=30
         )
 
-        frame_memoria.place(x=600, y=20, width=500, height=300)
-
-        self.text_memoria = tk.Text(frame_memoria)
-
-        self.text_memoria.pack(fill="both", expand=True)
+        self.text_memoria.pack()
 
         # ===== LOG =====
 
-        frame_log = tk.LabelFrame(
-            frame_principal,
+        tk.Label(
+            root,
             text="LOG DEL SISTEMA"
+        ).pack()
+
+        self.text_log = tk.Text(
+            root,
+            height=12
         )
 
-        frame_log.place(x=20, y=320, width=1080, height=300)
+        self.text_log.pack(fill="x")
 
-        self.text_log = tk.Text(frame_log)
+        # Actualización automática
+        self.actualizar()
 
-        self.text_log.pack(fill="both", expand=True)
+    def actualizar(self):
 
-    def actualizar_listos(self, cola):
+        gestor = self.simulador.gestor_procesos
+
+        # ===== LISTOS =====
 
         self.lista_listos.delete(0, tk.END)
 
-        for pcb in cola:
+        for pcb in gestor.cola_listos:
 
             self.lista_listos.insert(
                 tk.END,
                 f"P{pcb.pid} - {pcb.nombre}"
             )
 
-    def actualizar_cpu(self, pcb):
+        # ===== BLOQUEADOS =====
 
-        if pcb:
+        self.lista_bloqueados.delete(0, tk.END)
+
+        for dispositivo, cola in gestor.colas_io.items():
+
+            for pcb in cola:
+
+                self.lista_bloqueados.insert(
+                    tk.END,
+                    f"{pcb.pid} - {dispositivo}"
+                )
+
+        # ===== CPU =====
+
+        ejecutando = gestor.obtener_ejecutando()
+
+        if ejecutando:
 
             self.label_cpu.config(
-                text=f"P{pcb.pid}\n{pcb.nombre}"
+                text=(
+                    f"P{ejecutando.pid}\n"
+                    f"{ejecutando.nombre}\n"
+                    f"PC={ejecutando.pc}\n"
+                    f"BT={ejecutando.burst_time_restante}"
+                )
             )
 
         else:
 
             self.label_cpu.config(text="VACÍO")
 
-    def actualizar_log(self, mensaje):
+        # ===== MEMORIA =====
 
-        self.text_log.insert(
-            tk.END,
-            mensaje + "\n"
-        )
+        self.text_memoria.delete("1.0", tk.END)
 
-        self.text_log.see(tk.END)
+        for bloque in self.simulador.gestor_memoria.bloques:
+
+            if bloque.es_libre:
+                self.text_memoria.insert(tk.END, "[ ]")
+
+            else:
+                self.text_memoria.insert(
+                    tk.END,
+                    f"[P{bloque.pid_ocupante}]"
+                )
+
+        self.root.after(1000, self.actualizar)
