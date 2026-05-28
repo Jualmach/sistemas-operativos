@@ -5,7 +5,7 @@ Maneja la creación, transición de estados y finalización de procesos
 
 from collections import deque
 import random
-from enums import EstadoProceso, TipoInterrupcion, Constantes
+from enums import EstadoProceso, TipoInterrupcion, DispositivoIO, Constantes
 from clock import Clock
 from pcb import PCB
 
@@ -22,11 +22,11 @@ class GestorProcesos:
         self.cola_nuevo = []                           # Procesos por ingresar
         self.cola_listos = deque()                     # Procesos listos para ejecutar
         self.colas_io = {                              # Procesos esperando E/S
-            'TECLADO': deque(),
-            'DISCO': deque(),
-            'IMPRESORA': deque(),
-            'RED': deque(),
-            'USB': deque()
+            DispositivoIO.TECLADO: deque(),
+            DispositivoIO.DISCO: deque(),
+            DispositivoIO.IMPRESORA: deque(),
+            DispositivoIO.RED: deque(),
+            DispositivoIO.USB: deque()
         }
         
         # Proceso actualmente ejecutando
@@ -70,9 +70,6 @@ class GestorProcesos:
         self.contador_pids += 1
         
         # Crear PCB
-        # Determinar si es proceso del sistema
-        if nombre.upper().startswith("SO_"):
-            pcb.es_sistema = True
         pcb = PCB(
             pid=pid,
             nombre=nombre,
@@ -80,6 +77,9 @@ class GestorProcesos:
             burst_time=burst_time,
             prioridad=prioridad
         )
+
+        # Determinar si es proceso del sistema
+        pcb.es_sistema = nombre.upper().startswith("SO_")
         
         # Simulación de errores aleatorios (0.5%)
 
@@ -197,25 +197,23 @@ class GestorProcesos:
     
     # ==================== E/S ====================
     
-    def bloquear_en_dispositivo(self, pcb, dispositivo):
+    def bloquear_en_dispositivo(self, pcb, dispositivo, duracion):
         """
         Bloquea un proceso en espera de un dispositivo.
         
         Args:
             pcb: PCB del proceso
             dispositivo: Nombre del dispositivo (TECLADO, DISCO, IMPRESORA)
+            duracion: Tiempo de atención del dispositivo
         """
         self.cambiar_estado(pcb, EstadoProceso.BLOQUEADO)
+        if self.proceso_ejecutando == pcb:
+            self.liberar_cpu()
+
         pcb.set_dispositivo_actual(dispositivo)
-        # Registrar interrupción de E/S
-        pcb.agregar_interrupcion(
-            TipoInterrupcion.IO_ENTRADA,
-            random.randint(
-                Constantes.MIN_DURACION_INTERRUPCION,
-                Constantes.MAX_DURACION_INTERRUPCION
-            )
-        )
-        
+        tipo_interrupcion = TipoInterrupcion.IO_ENTRADA if dispositivo == DispositivoIO.TECLADO else TipoInterrupcion.IO_SALIDA
+        pcb.agregar_interrupcion(tipo_interrupcion, duracion)
+
         if dispositivo in self.colas_io:
             self.colas_io[dispositivo].append(pcb)
     
@@ -406,7 +404,8 @@ class GestorProcesos:
         for dispositivo, cola in self.colas_io.items():
             if cola:
                 pids = ", ".join([f"P{p.get_pid()}" for p in cola])
-                print(f"  {dispositivo}: {pids}")
+                nombre_disp = dispositivo.value if hasattr(dispositivo, 'value') else str(dispositivo)
+                print(f"  {nombre_disp}: {pids}")
         
         print(f"\nFINALIZADO ({len(self.procesos_finalizados)}): ", end="")
         print(", ".join([f"P{p.get_pid()}" for p in self.procesos_finalizados[-5:]]) if self.procesos_finalizados else "vacío")

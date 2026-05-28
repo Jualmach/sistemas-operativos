@@ -63,6 +63,10 @@ class Constantes:
     MEMORIA_TOTAL_KB = 2048                    # KB
     TAMAÑO_BLOQUE_KB = 64                      # KB (debe ser power of 2)
     TAMAÑO_BLOQUE_BYTES = TAMAÑO_BLOQUE_KB * 1024
+    BLOQUE_TAMANO_MIN_KB = 32                  # Mínimo bloque de memoria 2^n
+    BLOQUE_TAMANO_MAX_KB = 2048                # Máximo bloque de memoria 2^n
+    FACTOR_SEGMENTO_DATOS = 0.25               # 25% del ejecutable
+    FACTOR_STACK_HEAP = 0.15                   # 15% del ejecutable
     
     # Scheduling
     QUANTUM_DEFECTO = 10                       # Unidades de tiempo

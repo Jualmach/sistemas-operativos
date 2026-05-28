@@ -3,7 +3,7 @@ dispatcher.py - Despachador de procesos (Dispatcher)
 Realiza el cambio de contexto entre procesos
 """
 
-from enums import EstadoProceso, Constantes
+from enums import EstadoProceso, Constantes, TipoInterrupcion
 from clock import Clock
 
 
@@ -97,31 +97,28 @@ class Dispatcher:
             quantum: Unidades de tiempo a ejecutar
             
         Returns:
-            bool: True si el proceso continuó, False si terminó
+            dict: Resultado de ejecución con estado y evento si aplica
         """
         if not proceso or proceso.get_estado() != EstadoProceso.EJECUTANDO:
-            return False
-        
-        # Simular ejecución de instrucciones
+            return {'estado': 'no_ejecucion'}
+
         for _ in range(quantum):
-            # Incrementar PC
             proceso.incrementar_pc()
-            
-            # Incrementar contador de instrucciones
             self.instrucciones_ejecutadas += 1
-            
-            # Decrementar burst time
             proceso.burst_time_restante = max(0, proceso.burst_time_restante - 1)
-            
-            # Decrementar quantum restante (para RR)
+
             if hasattr(proceso, 'quantum_restante'):
                 proceso.quantum_restante = max(0, proceso.quantum_restante - 1)
-            
-            # Si proceso terminó
+
+            interrupcion = proceso.obtener_interrupcion_programada()
+            if interrupcion:
+                proceso.marcar_interrupcion_realizada(interrupcion)
+                return {'estado': 'interrupcion', 'evento': interrupcion}
+
             if proceso.get_burst_time_restante() <= 0:
-                return False
-        
-        return True
+                return {'estado': 'finalizado'}
+
+        return {'estado': 'continuar'}
     
     def puede_continuar_ejecucion(self, proceso):
         """

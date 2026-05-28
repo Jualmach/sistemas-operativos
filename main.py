@@ -20,6 +20,7 @@ from gestor_procesos import GestorProcesos
 from gestor_memoria import GestorMemoria
 from scheduler import Scheduler
 from dispatcher import Dispatcher
+from interrupciones import GestorInterrupciones
 import random
 
 
@@ -54,6 +55,7 @@ class SimuladorSO:
             quantum=quantum
         )
         self.dispatcher = Dispatcher(self.gestor_procesos)
+        self.gestor_interrupciones = GestorInterrupciones(self.gestor_procesos)
         
         # Control de simulación
         self.en_ejecucion = False
@@ -168,40 +170,93 @@ class SimuladorSO:
         
         # 1. Verificar procesos a ingresar
         self._ingresar_procesos_pendientes(tiempo_actual)
-        
+
+        # 1.b Verificar finalización de E/S en dispositivos
+        completados_io = self.gestor_interrupciones.procesar_tick()
+        for item in completados_io:
+            pcb = item['pcb']
+            dispositivo = item['dispositivo']
+            duracion = item['duracion_original']
+            pcb.agregar_tiempo_io(duracion)
+
+            if dispositivo == DispositivoIO.TECLADO:
+                decision = self.gestor_interrupciones.resolver_teclado(pcb)
+                if decision == 'cancelar':
+                    self.gestor_procesos.desbloquear_de_dispositivo(pcb)
+                    self.gestor_procesos.finalizar_proceso(
+                        pcb,
+                        codigo_error=1,
+                        mensaje_error='Abortado por Teclado'
+                    )
+                    self.gestor_memoria.liberar_memoria(pcb.get_pid())
+                    print(f"[{tiempo_actual:.1f}] Proceso P{pcb.get_pid()} ABORTADO por TECLADO")
+                    continue
+
+            self.gestor_procesos.desbloquear_de_dispositivo(pcb)
+            print(f"[{tiempo_actual:.1f}] Proceso P{pcb.get_pid()} DESBLOQUEADO desde {dispositivo.value}")
+
         # 2. Invocar scheduler si no hay proceso ejecutando
         if not self.gestor_procesos.obtener_ejecutando():
             siguiente = self._invocar_scheduler_corto_plazo()
             if siguiente:
                 self.dispatcher.cambiar_contexto(siguiente)
-        
+
         # 3. Ejecutar instrucción del proceso actual
         proceso_actual = self.gestor_procesos.obtener_ejecutando()
         if proceso_actual:
-            proceso_actual.pausar_ejecucion(1)  # Simular 1 unidad de tiempo ejecutando
-            self.dispatcher.ejecutar_instruccion(proceso_actual, quantum=1)
-            
-            # Verificar si terminó
-            if proceso_actual.get_burst_time_restante() <= 0:
-                self.gestor_procesos.finalizar_proceso(proceso_actual, codigo_error=0)
-                print(f"[{tiempo_actual:.1f}] Proceso P{proceso_actual.get_pid()} FINALIZADO")
-            
-            # Para RR, verificar si quantum se agotó
-            elif self.scheduler.politica == PoliticaScheduling.RR:
-                if hasattr(proceso_actual, 'quantum_restante') and proceso_actual.quantum_restante <= 0:
-                    # Invocar scheduler expropiativo
-                    siguiente = self.scheduler.invocar_expropiativo("QUANTUM_EXPIRADO")
+            if proceso_actual.codigo_error != 0:
+                self.gestor_procesos.finalizar_proceso(
+                    proceso_actual,
+                    codigo_error=proceso_actual.codigo_error,
+                    mensaje_error=proceso_actual.mensaje_error or 'Error interno'
+                )
+                self.gestor_memoria.liberar_memoria(proceso_actual.get_pid())
+                print(f"[{tiempo_actual:.1f}] Proceso P{proceso_actual.get_pid()} ABORTADO por ERROR")
+
+                siguiente = self.scheduler.invocar_expropiativo("ERROR")
+                if siguiente:
+                    self.dispatcher.cambiar_contexto(siguiente)
+            else:
+                resultado = self.dispatcher.ejecutar_instruccion(proceso_actual, quantum=1)
+
+                if resultado['estado'] == 'finalizado':
+                    self.gestor_procesos.finalizar_proceso(proceso_actual, codigo_error=0)
+                    self.gestor_memoria.liberar_memoria(proceso_actual.get_pid())
+                    print(f"[{tiempo_actual:.1f}] Proceso P{proceso_actual.get_pid()} FINALIZADO")
+
+                elif resultado['estado'] == 'interrupcion':
+                    evento = resultado['evento']
+                    self.estadisticas['total_interrupciones'] += 1
+                    self.gestor_procesos.bloquear_en_dispositivo(
+                        proceso_actual,
+                        evento['dispositivo'],
+                        evento['duracion']
+                    )
+                    self.gestor_interrupciones.ingresar_proceso(
+                        proceso_actual,
+                        evento['dispositivo'],
+                        evento['duracion']
+                    )
+                    print(f"[{tiempo_actual:.1f}] Proceso P{proceso_actual.get_pid()} BLOQUEADO en {evento['dispositivo'].value} por {evento['duracion']}u")
+
+                    siguiente = self.scheduler.invocar_expropiativo("IO_INTERRUPCION")
                     if siguiente:
                         self.dispatcher.cambiar_contexto(siguiente)
-        
+
+                elif self.scheduler.politica == PoliticaScheduling.RR:
+                    if hasattr(proceso_actual, 'quantum_restante') and proceso_actual.quantum_restante <= 0:
+                        siguiente = self.scheduler.invocar_expropiativo("QUANTUM_EXPIRADO")
+                        if siguiente:
+                            self.dispatcher.cambiar_contexto(siguiente)
+
         # 4. Incrementar reloj
         self.clock.incrementar_tiempo(1)
-        
+
         # 5. Verificar condición de finalización por tiempo máximo de seguridad
         if tiempo_actual >= self.max_tiempo:
             self.detener_simulacion()
             return False
-        
+
         return True
     
     def _ingresar_procesos_pendientes(self, tiempo_actual):
@@ -311,9 +366,10 @@ class SimuladorSO:
 
         for dev, q in bloqueados_dict.items():
             procesos = [f"P{p.get_pid()}" for p in q]
+            nombre_disp = dev.value if hasattr(dev, 'value') else str(dev)
 
             tabla_colas.add_row(
-                f"Block {dev}",
+                f"Block {nombre_disp}",
                 ", ".join(procesos) if procesos else "Vacía"
             )
 
@@ -518,7 +574,12 @@ def ejemplo_basico():
 
 
 if __name__ == "__main__":
-    ejemplo_basico()
+    import tkinter as tk
+    from interfaz import SimuladorGUI
+
+    root = tk.Tk()
+    SimuladorGUI(root)
+    root.mainloop()
 
 
 
