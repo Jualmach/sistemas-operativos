@@ -16,16 +16,51 @@ class SimuladorGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Simulador de Sistema Operativo")
-        self.root.geometry("1500x920")
-        self.root.minsize(1400, 840)
+        # Dimensión inicial sugerida para evitar desbordes en pantallas pequeñas
+        self.root.geometry("1200x700")
+        self.root.minsize(900, 600)
 
         self.auto_running = False
         self.auto_job = None
         self.simulador = None
 
-        self.politica_var = tk.StringVar(value=PoliticaScheduling.RR.value)
-        self.estrategia_var = tk.StringVar(value=EstrategiaMemoria.FIRST_FIT.value)
+        self.politica_var = tk.StringVar(value="Round Robin (RR)")
+        self.estrategia_var = tk.StringVar(value="First Fit")
         self.metodo_var = tk.StringVar(value=MetodoMemoria.MAPA_BITS.value)
+        self.quantum_var = tk.StringVar(value="4")
+
+        # Métricas de rendimiento iniciales
+        self.tiempo_espera_promedio = 0.0
+        self.tiempo_retorno_promedio = 0.0
+        self.eficiencia_sistema = 0.0
+        self.utilizacion_cpu = 0.0
+
+        # Contadores acumulados de interrupciones (visual)
+        self.count_interrupciones_temporizador = 0
+        self.count_interrupciones_teclado = 0
+        self.count_interrupciones_disco = 0
+
+        # Listas mostradas en combobox (nombres técnicos solicitados)
+        self._politica_display_names = [
+            "First Come First Served (FCFS)",
+            "Shortest Job First (SJF)",
+            "Round Robin (RR)",
+            "Priority Scheduling"
+        ]
+        self._estrategia_display_names = ["First Fit", "Best Fit", "Worst Fit"]
+
+        # Mapeos display -> enum (se construyen intentando emparejar nombres/valores)
+        self._politica_map = {}
+        for member in PoliticaScheduling:
+            for name in self._politica_display_names:
+                if member.name in name or str(member.value) in name:
+                    self._politica_map[name] = member
+
+        self._estrategia_map = {}
+        for member in EstrategiaMemoria:
+            for name in self._estrategia_display_names:
+                if member.name.replace("_", " ") in name or str(member.value) in name:
+                    self._estrategia_map[name] = member
 
         self._crear_widgets()
         self._reiniciar_simulador()
@@ -39,8 +74,39 @@ class SimuladorGUI:
         )
         titulo.pack(pady=8)
 
-        contenido = ttk.Frame(self.root)
-        contenido.pack(fill="both", expand=True, padx=8, pady=4)
+        # Usar un Canvas con scrollbar vertical para permitir scroll cuando la UI excede la altura
+        self.canvas = tk.Canvas(self.root)
+        self.v_scroll = ttk.Scrollbar(self.root, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.v_scroll.set)
+        self.v_scroll.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+
+        # Frame interno que contendrá el layout principal
+        contenido = ttk.Frame(self.canvas)
+        self.canvas_window = self.canvas.create_window((0, 0), window=contenido, anchor="nw")
+
+        # Ajuste de tamaño inicial y bindings para mantener el scrollregion actualizado
+        def _on_frame_config(event):
+            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+        contenido.bind("<Configure>", _on_frame_config)
+
+        # Hacer que la rueda del ratón también desplace el canvas
+        def _on_mousewheel(event):
+            # Windows / macOS
+            if hasattr(event, 'delta'):
+                self.canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+            else:
+                # X11 systems (Button-4/Button-5)
+                if event.num == 4:
+                    self.canvas.yview_scroll(-1, 'units')
+                elif event.num == 5:
+                    self.canvas.yview_scroll(1, 'units')
+
+        # Bind global wheel events to canvas for convenience
+        self.canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        self.canvas.bind_all("<Button-4>", _on_mousewheel)
+        self.canvas.bind_all("<Button-5>", _on_mousewheel)
 
         panel_izq = ttk.Frame(contenido)
         panel_izq.pack(side="left", fill="y", padx=(0, 8))
@@ -60,7 +126,7 @@ class SimuladorGUI:
 
         self._crear_panel_estadisticas(panel_der)
         self._crear_panel_proceso_form(panel_der)
-        self._crear_panel_log(self.root)
+        self._crear_panel_log(panel_der)
 
     def _crear_panel_cpu(self, parent):
         frame = ttk.LabelFrame(parent, text="Panel del Procesador / PCB")
@@ -102,6 +168,34 @@ class SimuladorGUI:
         frame = ttk.LabelFrame(parent, text="Control de Simulación")
         frame.pack(fill="x", pady=4)
 
+        # Área de configuración (comboboxes y quantum) arriba de los botones
+        config_frame = ttk.Frame(frame)
+        config_frame.pack(fill="x", padx=8, pady=(6, 4))
+
+        ttk.Label(config_frame, text="Planificador:").grid(row=0, column=0, sticky="w", pady=2)
+        self.combo_politica = ttk.Combobox(
+            config_frame,
+            textvariable=self.politica_var,
+            state="readonly",
+            values=self._politica_display_names
+        )
+        self.combo_politica.grid(row=0, column=1, sticky="ew", padx=4, pady=2)
+
+        ttk.Label(config_frame, text="Asignación Memoria:").grid(row=1, column=0, sticky="w", pady=2)
+        self.combo_estrategia = ttk.Combobox(
+            config_frame,
+            textvariable=self.estrategia_var,
+            state="readonly",
+            values=self._estrategia_display_names
+        )
+        self.combo_estrategia.grid(row=1, column=1, sticky="ew", padx=4, pady=2)
+
+        ttk.Label(config_frame, text="Quantum:").grid(row=0, column=2, sticky="w", padx=(12, 0))
+        self.entry_quantum = ttk.Entry(config_frame, width=6, textvariable=self.quantum_var)
+        self.entry_quantum.grid(row=0, column=3, sticky="w", padx=4, pady=2)
+
+        config_frame.columnconfigure(1, weight=1)
+
         boton_frame = ttk.Frame(frame)
         boton_frame.pack(fill="x", padx=8, pady=6)
 
@@ -120,37 +214,17 @@ class SimuladorGUI:
         self.btn_cargar20 = ttk.Button(frame, text="Cargar 20 procesos de prueba", command=self._cargar_procesos_prueba)
         self.btn_cargar20.pack(fill="x", padx=8, pady=(0, 6))
 
-        selector_frame = ttk.Frame(frame)
-        selector_frame.pack(fill="x", padx=8, pady=4)
-
-        ttk.Label(selector_frame, text="Política:").grid(row=0, column=0, sticky="w", pady=2)
-        self.combo_politica = ttk.Combobox(
-            selector_frame,
-            textvariable=self.politica_var,
-            state="readonly",
-            values=[p.value for p in PoliticaScheduling]
-        )
-        self.combo_politica.grid(row=0, column=1, sticky="ew", padx=4, pady=2)
-
-        ttk.Label(selector_frame, text="Estrategia memoria:").grid(row=1, column=0, sticky="w", pady=2)
-        self.combo_estrategia = ttk.Combobox(
-            selector_frame,
-            textvariable=self.estrategia_var,
-            state="readonly",
-            values=[e.value for e in EstrategiaMemoria]
-        )
-        self.combo_estrategia.grid(row=1, column=1, sticky="ew", padx=4, pady=2)
-
-        ttk.Label(selector_frame, text="Método memoria:").grid(row=2, column=0, sticky="w", pady=2)
+        # Nota: los combobox de Planificador y Asignación Memoria se muestran arriba en el área de configuración
+        # El combobox de 'Método memoria' permanece accesible en la interfaz (junto a los demás controles)
         self.combo_metodo = ttk.Combobox(
-            selector_frame,
+            frame,
             textvariable=self.metodo_var,
             state="readonly",
             values=[m.value for m in MetodoMemoria]
         )
-        self.combo_metodo.grid(row=2, column=1, sticky="ew", padx=4, pady=2)
-
-        selector_frame.columnconfigure(1, weight=1)
+        # Ubicamos el método en la parte inferior de controles como antes
+        # Se añadirá discretamente a la izquierda para mantener la disposición
+        self.combo_metodo.pack(fill="x", padx=8, pady=(0, 4))
 
     def _crear_panel_memoria(self, parent):
         frame = ttk.LabelFrame(parent, text="Memoria Física (Múltiplos de 2^n)")
@@ -178,6 +252,17 @@ class SimuladorGUI:
     def _crear_panel_io(self, parent):
         frame = ttk.LabelFrame(parent, text="Gestión de E/S")
         frame.pack(fill="both", expand=True, pady=4)
+
+        # Contadores visuales de interrupciones
+        counts_frame = ttk.Frame(frame)
+        counts_frame.pack(fill="x", padx=8, pady=(6, 0))
+
+        self.label_int_temp = ttk.Label(counts_frame, text=f"Temporizador: {self.count_interrupciones_temporizador}")
+        self.label_int_temp.pack(side="left", padx=(0, 12))
+        self.label_int_teclado = ttk.Label(counts_frame, text=f"Teclado: {self.count_interrupciones_teclado}")
+        self.label_int_teclado.pack(side="left", padx=(0, 12))
+        self.label_int_disco = ttk.Label(counts_frame, text=f"Disco: {self.count_interrupciones_disco}")
+        self.label_int_disco.pack(side="left", padx=(0, 12))
 
         io_frame = ttk.Frame(frame)
         io_frame.pack(fill="both", expand=True, padx=8, pady=8)
@@ -211,6 +296,18 @@ class SimuladorGUI:
         self.text_estadisticas = tk.Text(frame, width=34, height=18, padx=8, pady=4)
         self.text_estadisticas.config(state="disabled", bg="#f5f5f5")
         self.text_estadisticas.pack(fill="both", expand=True, padx=8, pady=4)
+
+        # Mostrar valores iniciales de métricas en el área de estadísticas
+        self.text_estadisticas.config(state="normal")
+        self.text_estadisticas.delete("1.0", tk.END)
+        inicial_text = (
+            f"Tiempo Promedio de Espera: {self.tiempo_espera_promedio:.1f}ms\n"
+            f"Tiempo Promedio de Retorno: {self.tiempo_retorno_promedio:.1f}ms\n"
+            f"Eficiencia del Sistema: {self.eficiencia_sistema:.1f}%\n"
+            f"Utilización de CPU: {self.utilizacion_cpu:.1f}%\n\n"
+        )
+        self.text_estadisticas.insert(tk.END, inicial_text)
+        self.text_estadisticas.config(state="disabled")
 
     def _crear_panel_proceso_form(self, parent):
         frame = ttk.LabelFrame(parent, text="Ingreso Manual de Procesos")
@@ -260,8 +357,23 @@ class SimuladorGUI:
             self.auto_job = None
             self.auto_running = False
 
-        politica = PoliticaScheduling(self.politica_var.get())
-        estrategia = EstrategiaMemoria(self.estrategia_var.get())
+        # Mapear selección visual a miembros de enum usando los mapeos construidos
+        politica_seleccion = self.politica_var.get()
+        estrategia_seleccion = self.estrategia_var.get()
+
+        politica = self._politica_map.get(politica_seleccion, None)
+        if politica is None:
+            try:
+                politica = PoliticaScheduling(politica_seleccion)
+            except Exception:
+                politica = list(PoliticaScheduling)[0]
+
+        estrategia = self._estrategia_map.get(estrategia_seleccion, None)
+        if estrategia is None:
+            try:
+                estrategia = EstrategiaMemoria(estrategia_seleccion)
+            except Exception:
+                estrategia = list(EstrategiaMemoria)[0]
         metodo = MetodoMemoria(self.metodo_var.get())
 
         self.simulador = SimuladorSO(
@@ -420,6 +532,19 @@ class SimuladorGUI:
                 restante = item['duracion_restante']
                 lista.insert(tk.END, f"P{pcb.get_pid()} - {pcb.get_nombre()} ({restante}u)")
 
+        # Actualizar contadores visuales de interrupciones (intentando leer del motor)
+        stats = getattr(self.simulador, 'estadisticas', {}) if self.simulador else {}
+        temp = stats.get('interrupciones_temporizador', self.count_interrupciones_temporizador)
+        tecla = stats.get('interrupciones_teclado', self.count_interrupciones_teclado)
+        disco = stats.get('interrupciones_disco', self.count_interrupciones_disco)
+
+        try:
+            self.label_int_temp.config(text=f"Temporizador: {temp}")
+            self.label_int_teclado.config(text=f"Teclado: {tecla}")
+            self.label_int_disco.config(text=f"Disco: {disco}")
+        except AttributeError:
+            pass
+
     def _actualizar_memoria(self):
         uso = self.simulador.gestor_memoria.get_uso_memoria()
         self.label_mem_total.config(text=f"Memoria Total: {uso['memoria_total_kb']} KB")
@@ -431,9 +556,28 @@ class SimuladorGUI:
 
         self.canvas_memoria.delete("all")
         bloques = self.simulador.gestor_memoria.bloques
-        columnas = min(16, len(bloques))
-        tamaño = 28
+        # Calcular columnas y tamaño dinámicamente según el ancho disponible
         spacing = 4
+        default_block = 28
+
+        # Forzar actualización de geometría para obtener ancho real
+        self.canvas_memoria.update_idletasks()
+        canvas_width = self.canvas_memoria.winfo_width() or self.canvas_memoria.winfo_reqwidth() or 800
+
+        # Número máximo de columnas que deseamos mostrar (mantener legibilidad)
+        desired_cols = min(16, max(1, len(bloques)))
+
+        # Calcular cuántas columnas caben con el tamaño por defecto
+        cols_fit = max(1, canvas_width // (default_block + spacing))
+
+        columnas = min(desired_cols, cols_fit)
+
+        # Si no caben las columnas deseadas, reducir el tamaño de bloque para ajustarlas
+        tamaño = default_block
+        if columnas < desired_cols and columnas > 0:
+            tamaño = max(12, int((canvas_width - (columnas + 1) * spacing) / columnas))
+
+        # Finalmente dibujar en filas/columnas calculadas
         for i, bloque in enumerate(bloques):
             row = i // columnas
             col = i % columnas
@@ -448,13 +592,27 @@ class SimuladorGUI:
                     (x0 + x1) / 2,
                     (y0 + y1) / 2,
                     text=f"P{bloque.pid_ocupante}",
-                    font=("Segoe UI", 7, "bold")
+                    font=("Segoe UI", max(7, int(tamaño / 4)), "bold")
                 )
 
     def _actualizar_estadisticas(self):
         finalizados = self.simulador.gestor_procesos.obtener_todos_finalizados()
         total_errores = self.simulador.gestor_procesos.total_errores
         self.label_resumen.config(text=f"Procesos finalizados: {len(finalizados)} | Errores: {total_errores}")
+
+        # Intentar obtener métricas del motor; si no existen, usar los valores almacenados
+        stats = getattr(self.simulador, 'estadisticas', {}) if self.simulador else {}
+        self.tiempo_espera_promedio = stats.get('tiempo_espera_promedio', self.tiempo_espera_promedio)
+        self.tiempo_retorno_promedio = stats.get('tiempo_retorno_promedio', self.tiempo_retorno_promedio)
+        self.eficiencia_sistema = stats.get('eficiencia_sistema', self.eficiencia_sistema)
+        self.utilizacion_cpu = stats.get('utilizacion_cpu', self.utilizacion_cpu)
+
+        texto_metricas = (
+            f"Tiempo Promedio de Espera: {self.tiempo_espera_promedio:.1f}ms\n"
+            f"Tiempo Promedio de Retorno: {self.tiempo_retorno_promedio:.1f}ms\n"
+            f"Eficiencia del Sistema: {self.eficiencia_sistema:.1f}%\n"
+            f"Utilización de CPU: {self.utilizacion_cpu:.1f}%\n\n"
+        )
 
         texto = (
             f"Total creados: {self.simulador.gestor_procesos.total_procesos_creados}\n"
@@ -463,7 +621,8 @@ class SimuladorGUI:
             f"Instrucciones ejecutadas: {self.simulador.dispatcher.instrucciones_ejecutadas}\n"
             f"Interrupciones ejecutadas: {self.simulador.estadisticas.get('total_interrupciones', 0)}\n"
         )
+
         self.text_estadisticas.config(state="normal")
         self.text_estadisticas.delete("1.0", tk.END)
-        self.text_estadisticas.insert(tk.END, texto)
+        self.text_estadisticas.insert(tk.END, texto_metricas + texto)
         self.text_estadisticas.config(state="disabled")
