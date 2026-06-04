@@ -295,6 +295,19 @@ class SimuladorGUI:
         self._crear_panel_dispositivo(io_frame, DispositivoIO.DISCO, 1)
         self._crear_panel_dispositivo(io_frame, DispositivoIO.IMPRESORA, 2)
 
+        teclado_frame = ttk.Frame(frame)
+        teclado_frame.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Button(
+            teclado_frame,
+            text="Continuar Teclado",
+            command=lambda: self._resolver_teclado_seleccionado("continuar")
+        ).pack(side="left", padx=(0, 4))
+        ttk.Button(
+            teclado_frame,
+            text="Cancelar Teclado",
+            command=lambda: self._resolver_teclado_seleccionado("cancelar")
+        ).pack(side="left", padx=4)
+
     def _crear_panel_dispositivo(self, parent, dispositivo, columna):
         frame = ttk.LabelFrame(parent, text=dispositivo.value)
         frame.grid(row=0, column=columna, sticky="nsew", padx=4, pady=2)
@@ -532,6 +545,22 @@ class SimuladorGUI:
             self.auto_job = None
         self.auto_running = False
         self._log("Ejecución automática detenida.")
+
+    def _resolver_teclado_seleccionado(self, decision):
+        seleccion = self.lista_teclado.curselection()
+        if not seleccion:
+            self._log("Selecciona un proceso en la cola de TECLADO.")
+            return
+
+        texto = self.lista_teclado.get(seleccion[0])
+        try:
+            pid = int(texto.split(" - ", 1)[0].replace("P", ""))
+        except (ValueError, IndexError):
+            self._log("No se pudo leer el PID seleccionado en TECLADO.")
+            return
+
+        self.simulador.gestor_interrupciones.decidir_teclado(pid, decision)
+        self._log(f"TECLADO: P{pid} -> {decision}.")
 
     def _log(self, mensaje):
         self.text_log.config(state="normal")

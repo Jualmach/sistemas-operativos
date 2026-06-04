@@ -81,9 +81,9 @@ class GestorProcesos:
         # Determinar si es proceso del sistema
         pcb.es_sistema = nombre.upper().startswith("SO_")
         
-        # Simulación de errores aleatorios (0.5%)
-
-        if random.random() < Constantes.TASA_ERROR:
+        # Inyección controlada de fallos: exactamente 0.5% acumulado (5 de cada 1000).
+        intervalo_fallo = int(1 / Constantes.TASA_ERROR)
+        if intervalo_fallo > 0 and (self.total_procesos_creados + 1) % intervalo_fallo == 0:
 
             pcb.set_codigo_error(
                 1,
@@ -235,6 +235,27 @@ class GestorProcesos:
 
         # Volver a cola de listos
         self.agregar_a_listos(pcb)
+
+    def remover_de_colas(self, pcb):
+        """Retira un proceso de todas las colas administradas."""
+        try:
+            self.cola_nuevo.remove(pcb)
+        except ValueError:
+            pass
+
+        try:
+            self.cola_listos.remove(pcb)
+        except ValueError:
+            pass
+
+        for cola in self.colas_io.values():
+            try:
+                cola.remove(pcb)
+            except ValueError:
+                pass
+
+        if self.proceso_ejecutando == pcb:
+            self.liberar_cpu()
     
     def obtener_siguientes_io(self, dispositivo):
         """
@@ -303,10 +324,17 @@ class GestorProcesos:
             codigo_error: Código de error (0 = exitoso)
             mensaje_error: Descripción del error
         """
+        if pcb.get_estado() == EstadoProceso.FINALIZADO:
+            return False
+
         # Registrar error si aplica
         if codigo_error != 0:
+            if pcb.codigo_error == 0:
+                self.total_errores += 1
             pcb.set_codigo_error(codigo_error, mensaje_error)
-            self.total_errores += 1
+
+        self.remover_de_colas(pcb)
+        pcb.set_dispositivo_actual(None)
         
         # Cambiar estado
         self.cambiar_estado(pcb, EstadoProceso.FINALIZADO)
@@ -322,6 +350,8 @@ class GestorProcesos:
         # Liberar CPU si estaba ejecutando
         if self.proceso_ejecutando == pcb:
             self.liberar_cpu()
+
+        return True
     
     # ==================== BÚSQUEDA ====================
     

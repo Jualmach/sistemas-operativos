@@ -7,6 +7,8 @@ class GestorInterrupciones:
 
     def __init__(self, gestor_procesos):
         self.gestor_procesos = gestor_procesos
+        self.politica_teclado = 'continuar'
+        self.decisiones_teclado = {}
         self.colas_dispositivo = {
             DispositivoIO.TECLADO: [],
             DispositivoIO.DISCO: [],
@@ -38,10 +40,26 @@ class GestorInterrupciones:
         return completados
 
     def resolver_teclado(self, pcb):
-        """Simula la señal de Teclado: continuar o cancelar."""
-        if random.choice([True, False]):
-            return 'continuar'
-        return 'cancelar'
+        """Resuelve la señal de teclado: continuar o cancelar."""
+        decision_manual = self.decisiones_teclado.pop(pcb.get_pid(), None)
+        if decision_manual in ('continuar', 'cancelar'):
+            return decision_manual
+
+        if self.politica_teclado == 'aleatorio':
+            return random.choice(['continuar', 'cancelar'])
+        if self.politica_teclado == 'cancelar':
+            return 'cancelar'
+        return 'continuar'
+
+    def configurar_teclado(self, politica):
+        """Configura la politica por defecto del teclado."""
+        if politica in ('continuar', 'cancelar', 'aleatorio'):
+            self.politica_teclado = politica
+
+    def decidir_teclado(self, pid, decision):
+        """Registra una decision manual para la proxima interrupcion de teclado."""
+        if decision in ('continuar', 'cancelar'):
+            self.decisiones_teclado[pid] = decision
 
     def obtener_procesos_por_dispositivo(self, dispositivo):
         """Devuelve la lista de procesos pendientes para un dispositivo."""

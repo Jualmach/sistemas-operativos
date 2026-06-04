@@ -21,6 +21,7 @@ from gestor_memoria import GestorMemoria
 from scheduler import Scheduler
 from dispatcher import Dispatcher
 from interrupciones import GestorInterrupciones
+from supervisor import SupervisorSO
 import random
 
 
@@ -31,6 +32,8 @@ class SimuladorSO:
                  tamaño_bloque_kb=Constantes.TAMAÑO_BLOQUE_KB,
                  politica_scheduling=PoliticaScheduling.RR,
                  estrategia_memoria=EstrategiaMemoria.FIRST_FIT,
+                 es_expropiativo=True,
+                 politica_teclado='continuar',
                  quantum=Constantes.QUANTUM_DEFECTO):
         """
         Inicializa el simulador.
@@ -43,6 +46,7 @@ class SimuladorSO:
             quantum: Quantum para Round Robin
         """
         self.clock = Clock()
+        self.clock.reset()
         self.gestor_procesos = GestorProcesos()
         self.gestor_memoria = GestorMemoria(
             memoria_total_kb=memoria_total_kb,
@@ -52,10 +56,13 @@ class SimuladorSO:
         self.scheduler = Scheduler(
             self.gestor_procesos,
             politica=politica_scheduling,
+            es_expropiativo=es_expropiativo,
             quantum=quantum
         )
         self.dispatcher = Dispatcher(self.gestor_procesos)
         self.gestor_interrupciones = GestorInterrupciones(self.gestor_procesos)
+        self.gestor_interrupciones.configurar_teclado(politica_teclado)
+        self.supervisor = SupervisorSO()
         
         # Control de simulación
         self.en_ejecucion = False
@@ -68,8 +75,22 @@ class SimuladorSO:
             'tiempo_inicio': 0,
             'tiempo_fin': 0,
             'total_cambios_contexto': 0,
-            'total_interrupciones': 0
+            'total_interrupciones': 0,
+            'interrupciones_temporizador': 0,
+            'interrupciones_teclado': 0,
+            'interrupciones_disco': 0,
+            'interrupciones_impresora': 0,
+            'tiempo_espera_promedio': 0.0,
+            'tiempo_respuesta_promedio': 0.0,
+            'tiempo_retorno_promedio': 0.0,
+            'utilizacion_cpu': 0.0,
+            'eficiencia_sistema': 0.0
         }
+        self._muestras_memoria = 0
+        self._suma_fragmentacion_interna = 0.0
+        self._suma_fragmentacion_externa = 0.0
+        self._max_fragmentacion_interna = 0.0
+        self._max_fragmentacion_externa = 0.0
     
     # ==================== GESTIÓN DE PROCESOS ====================
     
@@ -135,6 +156,7 @@ class SimuladorSO:
         print("INICIANDO SIMULADOR DE SISTEMA OPERATIVO")
         print(f"{'='*70}")
         print(f"Política: {self.scheduler.politica.value}")
+        print(f"Contexto: {'Expropiativo' if self.scheduler.es_expropiativo else 'No expropiativo'}")
         print(f"Estrategia Memoria: {self.gestor_memoria.estrategia.value}")
         print(f"Quantum: {self.scheduler.quantum}")
         print(f"Procesos a procesar: {len(self.procesos_cola_entrada)}")
@@ -170,6 +192,7 @@ class SimuladorSO:
         
         # 1. Verificar procesos a ingresar
         self._ingresar_procesos_pendientes(tiempo_actual)
+        self._evaluar_expropiacion_por_llegada()
 
         # 1.b Verificar finalización de E/S en dispositivos
         completados_io = self.gestor_interrupciones.procesar_tick()
@@ -182,7 +205,6 @@ class SimuladorSO:
             if dispositivo == DispositivoIO.TECLADO:
                 decision = self.gestor_interrupciones.resolver_teclado(pcb)
                 if decision == 'cancelar':
-                    self.gestor_procesos.desbloquear_de_dispositivo(pcb)
                     self.gestor_procesos.finalizar_proceso(
                         pcb,
                         codigo_error=1,
@@ -200,6 +222,8 @@ class SimuladorSO:
             siguiente = self._invocar_scheduler_corto_plazo()
             if siguiente:
                 self.dispatcher.cambiar_contexto(siguiente)
+
+        self._validar_sistema()
 
         # 3. Ejecutar instrucción del proceso actual
         proceso_actual = self.gestor_procesos.obtener_ejecutando()
@@ -227,6 +251,7 @@ class SimuladorSO:
                 elif resultado['estado'] == 'interrupcion':
                     evento = resultado['evento']
                     self.estadisticas['total_interrupciones'] += 1
+                    self._registrar_interrupcion_dispositivo(evento['dispositivo'])
                     self.gestor_procesos.bloquear_en_dispositivo(
                         proceso_actual,
                         evento['dispositivo'],
@@ -243,7 +268,7 @@ class SimuladorSO:
                     if siguiente:
                         self.dispatcher.cambiar_contexto(siguiente)
 
-                elif self.scheduler.politica == PoliticaScheduling.RR:
+                elif self.scheduler.politica == PoliticaScheduling.RR and self.scheduler.es_expropiativo:
                     if hasattr(proceso_actual, 'quantum_restante') and proceso_actual.quantum_restante <= 0:
                         siguiente = self.scheduler.invocar_expropiativo("QUANTUM_EXPIRADO")
                         if siguiente:
@@ -251,6 +276,7 @@ class SimuladorSO:
 
         # 4. Incrementar reloj
         self.clock.incrementar_tiempo(1)
+        self._actualizar_metricas()
 
         # 5. Verificar condición de finalización por tiempo máximo de seguridad
         if tiempo_actual >= self.max_tiempo:
@@ -285,6 +311,98 @@ class SimuladorSO:
     def _invocar_scheduler_corto_plazo(self):
         """Invoca el scheduler de corto plazo"""
         return self.scheduler.planificacion_corto_plazo()
+
+    def _validar_sistema(self):
+        """Ejecuta el modulo supervisor sobre procesos activos."""
+        errores_por_pid = self.supervisor.validar_sistema(
+            self.gestor_procesos,
+            self.gestor_memoria
+        )
+        for pid, errores in errores_por_pid.items():
+            pcb = self.gestor_procesos.obtener_proceso(pid)
+            if not pcb:
+                continue
+            self.gestor_procesos.finalizar_proceso(
+                pcb,
+                codigo_error=2,
+                mensaje_error='; '.join(errores)
+            )
+            self.gestor_memoria.liberar_memoria(pid)
+
+    def _evaluar_expropiacion_por_llegada(self):
+        """Aplica expropiación para SJF/SRTF y prioridades cuando llega un proceso mejor."""
+        if not self.scheduler.es_expropiativo:
+            return
+
+        actual = self.gestor_procesos.obtener_ejecutando()
+        listos = list(self.gestor_procesos.cola_listos)
+        if not actual or not listos:
+            return
+
+        debe_expropiar = False
+        if self.scheduler.politica in (PoliticaScheduling.SJF, PoliticaScheduling.SRTF):
+            mejor = min(listos, key=lambda p: p.get_burst_time_restante())
+            debe_expropiar = mejor.get_burst_time_restante() < actual.get_burst_time_restante()
+        elif self.scheduler.politica == PoliticaScheduling.PRIORIDADES:
+            mejor = max(listos, key=lambda p: p.get_prioridad())
+            debe_expropiar = mejor.get_prioridad() > actual.get_prioridad()
+
+        if debe_expropiar:
+            siguiente = self.scheduler.invocar_expropiativo("LLEGADA_PROCESO")
+            if siguiente:
+                self.dispatcher.cambiar_contexto(siguiente)
+
+    def _registrar_interrupcion_dispositivo(self, dispositivo):
+        """Actualiza contadores por tipo de interrupción de E/S."""
+        if dispositivo == DispositivoIO.TECLADO:
+            self.estadisticas['interrupciones_teclado'] += 1
+        elif dispositivo == DispositivoIO.DISCO:
+            self.estadisticas['interrupciones_disco'] += 1
+        elif dispositivo == DispositivoIO.IMPRESORA:
+            self.estadisticas['interrupciones_impresora'] += 1
+
+    def _actualizar_metricas(self):
+        """Recalcula métricas globales visibles en la GUI y reportes."""
+        finalizados = self.gestor_procesos.obtener_todos_finalizados()
+        activos = self.gestor_procesos.obtener_todos_activos()
+        procesos = finalizados + activos
+        tiempo_actual = self.clock.obtener_tiempo()
+
+        self.estadisticas['total_cambios_contexto'] = self.dispatcher.cambios_contexto_totales
+
+        if not procesos:
+            return
+
+        cpu_total = sum(p.tiempo_total_cpu for p in procesos)
+        espera_total = sum(p.get_tiempo_total_espera() for p in procesos)
+        timer_total = sum(
+            1
+            for p in procesos
+            for evento in p.historial_interrupciones
+            if evento['tipo'] == TipoInterrupcion.TIMER
+        )
+        respuesta = [p.get_tiempo_respuesta() for p in procesos if p.tiempo_primera_ejecucion is not None]
+        retorno = [
+            (tiempo_actual - p.tiempo_creacion)
+            for p in finalizados
+        ]
+
+        self.estadisticas['tiempo_espera_promedio'] = espera_total / len(procesos)
+        self.estadisticas['tiempo_respuesta_promedio'] = (sum(respuesta) / len(respuesta)) if respuesta else 0.0
+        self.estadisticas['tiempo_retorno_promedio'] = (sum(retorno) / len(retorno)) if retorno else 0.0
+        self.estadisticas['utilizacion_cpu'] = (cpu_total / tiempo_actual * 100) if tiempo_actual > 0 else 0.0
+        self.estadisticas['interrupciones_temporizador'] = timer_total
+        self.estadisticas['eficiencia_sistema'] = (
+            cpu_total / (cpu_total + self.dispatcher.tiempo_cambio_contexto_total) * 100
+            if cpu_total + self.dispatcher.tiempo_cambio_contexto_total > 0 else 0.0
+        )
+
+        uso = self.gestor_memoria.get_uso_memoria()
+        self._muestras_memoria += 1
+        self._suma_fragmentacion_interna += uso['fragmentacion_interna']
+        self._suma_fragmentacion_externa += uso['fragmentacion_externa']
+        self._max_fragmentacion_interna = max(self._max_fragmentacion_interna, uso['fragmentacion_interna'])
+        self._max_fragmentacion_externa = max(self._max_fragmentacion_externa, uso['fragmentacion_externa'])
     
     # ==================== EJECUCIÓN COMPLETA ====================
     
@@ -486,6 +604,38 @@ class SimuladorSO:
         if finalizados:
             print(f"{'PROM':<21}{suma_respuesta/len(finalizados):<10.1f}{suma_espera/len(finalizados):<10.1f}")
         print("="*70 + "\n")
+
+    def ejecutar_sin_interfaz(self, max_tiempo=10000):
+        """Ejecuta la simulación completa sin refrescar pantalla ni usar pausas."""
+        self.iniciar_simulacion(max_tiempo=max_tiempo)
+        while self.ejecutar_paso():
+            pass
+        self.detener_simulacion()
+        self._actualizar_metricas()
+        return self.obtener_resumen_resultados()
+
+    def obtener_resumen_resultados(self):
+        """Devuelve un resumen numérico de rendimiento y memoria."""
+        finalizados = self.gestor_procesos.obtener_todos_finalizados()
+        uso = self.gestor_memoria.get_uso_memoria()
+        muestras = max(1, self._muestras_memoria)
+        return {
+            'tiempo_total': self.clock.obtener_tiempo(),
+            'procesos_finalizados': len(finalizados),
+            'errores': self.gestor_procesos.total_errores,
+            'espera_promedio': self.estadisticas['tiempo_espera_promedio'],
+            'respuesta_promedio': self.estadisticas['tiempo_respuesta_promedio'],
+            'retorno_promedio': self.estadisticas['tiempo_retorno_promedio'],
+            'utilizacion_cpu': self.estadisticas['utilizacion_cpu'],
+            'cambios_contexto': self.dispatcher.cambios_contexto_totales,
+            'fragmentacion_interna': uso['fragmentacion_interna'],
+            'fragmentacion_externa': uso['fragmentacion_externa'],
+            'fragmentacion_interna_promedio': self._suma_fragmentacion_interna / muestras,
+            'fragmentacion_externa_promedio': self._suma_fragmentacion_externa / muestras,
+            'fragmentacion_interna_max': self._max_fragmentacion_interna,
+            'fragmentacion_externa_max': self._max_fragmentacion_externa,
+            'desperdicio_memoria': uso['desperdicio_memoria']
+        }
     
     def comparar_politicas(self, procesos_test):
         """
@@ -544,6 +694,68 @@ class SimuladorSO:
             print(f"{politica:<20} {datos['tiempo_respuesta_promedio']:<20.2f} "
                   f"{datos['tiempo_espera_promedio']:<20.2f}")
 
+    def comparar_configuraciones(self, procesos_test, max_tiempo=10000, semilla=12345):
+        """
+        Ejecuta la matriz requerida: 4 políticas x 2 contextos x 3 estrategias de memoria.
+
+        Args:
+            procesos_test: Lista de (nombre, tamaño, burst_time, prioridad, entrada)
+            max_tiempo: límite de seguridad por simulación
+            semilla: semilla base para hacer reproducibles las pruebas
+        """
+        politicas = [
+            (PoliticaScheduling.FCFS, 10),
+            (PoliticaScheduling.SJF, 10),
+            (PoliticaScheduling.RR, 5),
+            (PoliticaScheduling.PRIORIDADES, 10)
+        ]
+        contextos = [True, False]
+        estrategias = [
+            EstrategiaMemoria.FIRST_FIT,
+            EstrategiaMemoria.BEST_FIT,
+            EstrategiaMemoria.WORST_FIT
+        ]
+
+        resultados = []
+        caso = 0
+
+        for politica, quantum in politicas:
+            for es_expropiativo in contextos:
+                for estrategia in estrategias:
+                    caso += 1
+                    random.seed(semilla + caso)
+                    sim = SimuladorSO(
+                        politica_scheduling=politica,
+                        estrategia_memoria=estrategia,
+                        es_expropiativo=es_expropiativo,
+                        quantum=quantum
+                    )
+
+                    for nombre, tamaño, burst, prio, entrada in procesos_test:
+                        sim.crear_proceso_usuario(nombre, tamaño, burst, prio, entrada)
+
+                    resumen = sim.ejecutar_sin_interfaz(max_tiempo=max_tiempo)
+                    resumen.update({
+                        'politica': politica.value,
+                        'contexto': 'Expropiativo' if es_expropiativo else 'No expropiativo',
+                        'estrategia': estrategia.value
+                    })
+                    resultados.append(resumen)
+
+        print("\n" + "="*120)
+        print("COMPARACIÓN 4 POLÍTICAS x 2 CONTEXTOS x 3 ESTRATEGIAS")
+        print("="*120)
+        print(f"{'Política':<14}{'Contexto':<18}{'Memoria':<12}{'Fin':<6}{'T':<8}{'Espera':<10}{'Resp':<10}{'CPU%':<8}{'FragProm%':<10}{'Ctx':<6}")
+        print("-"*120)
+        for r in resultados:
+            print(f"{r['politica']:<14}{r['contexto']:<18}{r['estrategia']:<12}"
+                  f"{r['procesos_finalizados']:<6}{r['tiempo_total']:<8.1f}"
+                  f"{r['espera_promedio']:<10.1f}{r['respuesta_promedio']:<10.1f}"
+                  f"{r['utilizacion_cpu']:<8.1f}{r['fragmentacion_externa_promedio']:<10.1f}"
+                  f"{r['cambios_contexto']:<6}")
+
+        return resultados
+
 
 # ==================== EJEMPLOS DE USO ====================
 
@@ -580,6 +792,3 @@ if __name__ == "__main__":
     root = tk.Tk()
     SimuladorGUI(root)
     root.mainloop()
-
-
-

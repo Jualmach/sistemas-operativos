@@ -105,6 +105,7 @@ class Dispatcher:
         for _ in range(quantum):
             proceso.incrementar_pc()
             self.instrucciones_ejecutadas += 1
+            proceso.tiempo_total_cpu += 1
             proceso.burst_time_restante = max(0, proceso.burst_time_restante - 1)
 
             if hasattr(proceso, 'quantum_restante'):

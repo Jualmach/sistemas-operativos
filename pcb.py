@@ -3,6 +3,8 @@ pcb.py - Process Control Block (Bloque de Control de Proceso)
 Almacena toda la información de estado de un proceso
 """
 
+import random
+
 from enums import EstadoProceso, Constantes, DispositivoIO
 from clock import Clock
 
@@ -281,25 +283,34 @@ class PCB:
         return self._siguiente_potencia_de_dos(self.tamaño_total_kb)
 
     def calcular_interrupciones_objetivo(self):
-        """Calcula la cantidad de interrupciones E/S según tamaño y burst time."""
-        base = (self.tamaño_total_kb // 64) + (self.burst_time // 8)
-        cantidad = 5 + (base % 16)
-        return min(Constantes.MAX_INTERRUPCIONES_POR_PROCESO,
-                   max(Constantes.MIN_INTERRUPCIONES_POR_PROCESO, cantidad))
+        """
+        Calcula la cantidad de interrupciones de E/S con una formula aleatoria.
+
+        U ~ uniforme(0, 1)
+        rango_base = min(20, max(5, 5 + tam_total/128 + burst/10))
+        cantidad = 5 + floor(U * (rango_base - 5 + 1))
+        """
+        rango_base = int(5 + (self.tamaño_total_kb / 128) + (self.burst_time / 10))
+        rango_base = min(Constantes.MAX_INTERRUPCIONES_POR_PROCESO,
+                         max(Constantes.MIN_INTERRUPCIONES_POR_PROCESO, rango_base))
+        cantidad = Constantes.MIN_INTERRUPCIONES_POR_PROCESO + int(
+            random.random() * (rango_base - Constantes.MIN_INTERRUPCIONES_POR_PROCESO + 1)
+        )
+        return min(self.burst_time, max(Constantes.MIN_INTERRUPCIONES_POR_PROCESO, cantidad))
 
     def _crear_interrupciones_programadas(self):
         """Genera la lista de interrupciones programadas con su momento de PC."""
         total = self.calcular_interrupciones_objetivo()
         interrupciones = []
+        objetivos = sorted(random.sample(range(1, self.burst_time + 1), k=min(total, self.burst_time)))
         for idx in range(total):
             dispositivo = self.seleccionar_dispositivo_interrupcion(idx)
             duracion = self.calcular_duracion_interrupcion(idx)
-            objetivo_pc = max(1, round((idx + 1) * self.burst_time / (total + 1)))
             interrupciones.append({
                 'indice': idx,
                 'dispositivo': dispositivo,
                 'duracion': duracion,
-                'objetivo_pc': objetivo_pc,
+                'objetivo_pc': objetivos[idx],
                 'realizada': False
             })
         return interrupciones
@@ -317,33 +328,27 @@ class PCB:
         self.interrupciones_realizadas += 1
 
     def calcular_duracion_interrupcion(self, indice):
-        """Calcula la duración de una interrupción según tamaño, burst time e índice."""
-        valor_base = (self.tamaño_total_kb // 32) + (self.burst_time // 5) + indice
-        duracion = 5 + (valor_base % 16)
-        return min(Constantes.MAX_DURACION_INTERRUPCION,
-                   max(Constantes.MIN_DURACION_INTERRUPCION, duracion))
+        """
+        Calcula la duracion aleatoria de una interrupcion.
+
+        U ~ uniforme(0, 1)
+        duracion = 5 + floor(U * (20 - 5 + 1))
+        """
+        rango = Constantes.MAX_DURACION_INTERRUPCION - Constantes.MIN_DURACION_INTERRUPCION + 1
+        return Constantes.MIN_DURACION_INTERRUPCION + int(random.random() * rango)
 
     def seleccionar_dispositivo_interrupcion(self, indice):
-        """Selecciona uno de los tres dispositivos físicos basados en fórmula determinista."""
+        """Selecciona aleatoriamente uno de los tres dispositivos fisicos requeridos."""
         lista_dispositivos = [
             DispositivoIO.TECLADO,
             DispositivoIO.DISCO,
             DispositivoIO.IMPRESORA
         ]
-        valor = ((self.tamaño_total_kb // 64) + (self.burst_time // 10) + indice) % len(lista_dispositivos)
-        return lista_dispositivos[valor]
+        return random.choice(lista_dispositivos)
 
     def generar_plan_interrupciones(self):
-        """Genera un plan de interrupciones determinista para el proceso."""
-        total = self.calcular_interrupciones_objetivo()
-        return [
-            {
-                'indice': idx,
-                'dispositivo': self.seleccionar_dispositivo_interrupcion(idx),
-                'duracion': self.calcular_duracion_interrupcion(idx)
-            }
-            for idx in range(total)
-        ]
+        """Devuelve el plan de interrupciones ya programado para el proceso."""
+        return [evento.copy() for evento in self.interrupciones_programadas]
     
     def restaurar_contexto(self, contexto):
         """
